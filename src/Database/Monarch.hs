@@ -8,19 +8,22 @@
 -- Portability : unknown
 --
 -- Provide TokyoTyrant monadic access interface.
---
 module Database.Monarch
-    (
-      Monarch, MonarchT
-    , Connection, ConnectionPool
-    , withMonarchConn
-    , withMonarchPool
-    , runMonarchConn
-    , runMonarchPool
-    , ExtOption(..), RestoreOption(..), MiscOption(..)
-    , Code(..)
-    , MonadMonarch(..)
-    ) where
+  ( Monarch,
+    MonarchT,
+    Connection,
+    ConnectionPool,
+    withMonarchConn,
+    withMonarchPool,
+    runMonarchConn,
+    runMonarchPool,
+    ExtOption (..),
+    RestoreOption (..),
+    MiscOption (..),
+    Code (..),
+    MonadMonarch (..),
+  )
+where
 
-import Database.Monarch.Types hiding (sendLBS, recvLBS)
 import Database.Monarch.Action ()
+import Database.Monarch.Types hiding (recvLBS, sendLBS)

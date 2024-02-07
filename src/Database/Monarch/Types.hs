@@ -1,9 +1,10 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
+
 -- |
 -- Module      : Database.Monarch.Types
 -- Copyright   : 2013 Noriyuki OHKAWA
@@ -14,306 +15,427 @@
 -- Portability : unknown
 --
 -- Type definitions.
---
 module Database.Monarch.Types
-    (
-      Monarch, MonarchT
-    , Connection, ConnectionPool
-    , withMonarchConn
-    , withMonarchPool
-    , runMonarchConn
-    , runMonarchPool
-    , ExtOption(..), RestoreOption(..), MiscOption(..)
-    , Code(..)
-    , sendLBS, recvLBS
-    , MonadMonarch(..)
-    ) where
+  ( Monarch,
+    MonarchT,
+    Connection,
+    ConnectionPool,
+    withMonarchConn,
+    withMonarchPool,
+    runMonarchConn,
+    runMonarchPool,
+    ExtOption (..),
+    RestoreOption (..),
+    MiscOption (..),
+    Code (..),
+    sendLBS,
+    recvLBS,
+    MonadMonarch (..),
+  )
+where
 
-import Prelude hiding (catch)
-import Data.Int
-import Data.Conduit.Pool
-import Control.Exception.Lifted
-import Control.Monad.Error
-import Control.Monad.Reader
-import Control.Monad.Base
-import Control.Applicative
+import Control.Exception.Lifted (SomeException, bracket, catch, mask, onException, throwIO)
+import Control.Monad.Base (MonadBase)
+import Control.Monad.Except (ExceptT (..), MonadError (..), MonadIO (..), MonadTrans (..), runExceptT, throwError)
+import Control.Monad.Reader (MonadReader, ReaderT (..), asks)
 import Control.Monad.Trans.Control
-import Network.Socket
-import qualified Network.Socket.ByteString.Lazy as LBS
-import qualified Data.ByteString.Lazy as LBS
+  ( ComposeSt,
+    MonadBaseControl (..),
+    MonadTransControl (..),
+    defaultLiftBaseWith,
+    defaultRestoreM,
+  )
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as LBS
+import Data.Function
+import Data.Int (Int64)
+import Data.Pool (Pool, defaultPoolConfig, destroyResource, newPool, putResource, takeResource)
+import Network.Socket
+  ( AddrInfo (..),
+    AddrInfoFlag (..),
+    HostName,
+    Socket,
+    SocketType (..),
+    close,
+    connect,
+    defaultHints,
+    getAddrInfo,
+    socket,
+  )
+import qualified Network.Socket.ByteString.Lazy as LBS
+import Prelude
 
 -- | Connection with TokyoTyrant
-data Connection = Connection { connection :: Socket }
+newtype Connection = Connection {connection :: Socket}
 
 -- | Connection pool with TokyoTyrant
 type ConnectionPool = Pool Connection
 
 -- | Error code
-data Code = Success
-          | InvalidOperation
-          | HostNotFound
-          | ConnectionRefused
-          | SendError
-          | ReceiveError
-          | ExistingRecord
-          | NoRecordFound
-          | MiscellaneousError
-            deriving (Eq, Show)
-
-instance Error Code
+data Code
+  = Success
+  | InvalidOperation
+  | HostNotFound
+  | ConnectionRefused
+  | SendError
+  | ReceiveError
+  | ExistingRecord
+  | NoRecordFound
+  | MiscellaneousError
+  deriving (Prelude.Eq, Prelude.Show)
 
 -- | Options for scripting extension
-data ExtOption = RecordLocking -- ^ record locking
-               | GlobalLocking -- ^ global locking
+data ExtOption
+  = -- | record locking
+    RecordLocking
+  | -- | global locking
+    GlobalLocking
 
 -- | Options for restore
-data RestoreOption = ConsistencyChecking -- ^ consistency checking
+data RestoreOption
+  = -- | consistency checking
+    ConsistencyChecking
 
 -- | Options for miscellaneous operation
-data MiscOption = NoUpdateLog -- ^ omission of update log
+data MiscOption
+  = -- | omission of update log
+    NoUpdateLog
 
 -- | The Monarch monad transformer to provide TokyoTyrant access.
-newtype MonarchT m a =
-    MonarchT { unMonarchT :: ErrorT Code (ReaderT Connection m) a }
-    deriving ( Functor, Applicative, Monad, MonadIO
-             , MonadReader Connection, MonadError Code, MonadBase base )
+newtype MonarchT m a = MonarchT {unMonarchT :: ExceptT Code (ReaderT Connection m) a}
+  deriving
+    ( Prelude.Functor,
+      Prelude.Applicative,
+      Prelude.Monad,
+      MonadIO,
+      MonadReader Connection,
+      MonadError Code,
+      MonadBase base
+    )
 
 instance MonadTrans MonarchT where
-    lift = MonarchT . lift . lift
+  lift = MonarchT Prelude.. lift Prelude.. lift
 
 instance MonadTransControl MonarchT where
-    newtype StT MonarchT a = StMonarch { unStMonarch :: Either Code a }
-    liftWith f = MonarchT . ErrorT . ReaderT $ (\r -> liftM Right (f $ \t -> liftM StMonarch (runReaderT (runErrorT (unMonarchT t)) r)))
-    restoreT = MonarchT . ErrorT . ReaderT . const . liftM unStMonarch
+  type StT MonarchT a = Prelude.Either Code a
+  liftWith f = MonarchT Prelude.. ExceptT Prelude.. ReaderT Prelude.$ (\r -> Prelude.fmap Prelude.Right (f Prelude.$ \t -> runReaderT (runExceptT (unMonarchT t)) r))
+  restoreT = MonarchT Prelude.. ExceptT Prelude.. ReaderT Prelude.. Prelude.const
 
-instance MonadBaseControl base m => MonadBaseControl base (MonarchT m) where
-    newtype StM (MonarchT m) a = StMMonarchT { unStMMonarchT :: ComposeSt MonarchT m a }
-    liftBaseWith = defaultLiftBaseWith StMMonarchT
-    restoreM = defaultRestoreM unStMMonarchT
+instance (MonadBaseControl base m) => MonadBaseControl base (MonarchT m) where
+  type StM (MonarchT m) a = ComposeSt MonarchT m a
+  liftBaseWith = defaultLiftBaseWith
+  restoreM = defaultRestoreM
 
 -- | IO Specialized
-type Monarch = MonarchT IO
+type Monarch = MonarchT Prelude.IO
 
 -- | Run Monarch with TokyoTyrant at target host and port.
-runMonarch :: MonadIO m =>
-              Connection
-           -> MonarchT m a
-           -> m (Either Code a)
+runMonarch ::
+  (MonadIO m) =>
+  Connection ->
+  MonarchT m a ->
+  m (Prelude.Either Code a)
 runMonarch conn action =
-    runReaderT (runErrorT $ unMonarchT action) conn
+  runReaderT (runExceptT Prelude.$ unMonarchT action) conn
 
 -- | Create a TokyoTyrant connection and run the given action.
 -- Don't use the given 'Connection' outside the action.
-withMonarchConn :: ( MonadBaseControl IO m
-                   , MonadIO m ) =>
-                   String -- ^ host
-                -> Int -- ^ port
-                -> (Connection -> m a)
-                -> m a
-withMonarchConn host port = bracket open' close'
-    where
-      open' = liftIO $ getConnection host port
-      close' = liftIO . sClose . connection
+withMonarchConn ::
+  ( MonadBaseControl Prelude.IO m,
+    MonadIO m
+  ) =>
+  -- | host
+  Prelude.String ->
+  -- | port
+  Prelude.Int ->
+  (Connection -> m a) ->
+  m a
+withMonarchConn host port = bracket open' close_
+  where
+    open' = liftIO Prelude.$ getConnection host port
+    close_ = liftIO Prelude.. close Prelude.. connection
 
 -- | Create a TokyoTyrant connection pool and run the given action.
 -- Don't use the given 'ConnectionPool' outside the action.
-withMonarchPool :: ( MonadBaseControl IO m
-                   , MonadIO m ) =>
-                   String -- ^ host
-                -> Int -- ^ port
-                -> Int -- ^ number of connections
-                -> (ConnectionPool -> m a)
-                -> m a
+withMonarchPool ::
+  ( MonadBaseControl Prelude.IO m,
+    MonadIO m
+  ) =>
+  -- | host
+  Prelude.String ->
+  -- | port
+  Prelude.Int ->
+  -- | number of connections
+  Prelude.Int ->
+  (ConnectionPool -> m a) ->
+  m a
 withMonarchPool host port connections f =
-    liftIO (createPool open' close' 1 20 connections) >>= f
-    where
-      open' = getConnection host port
-      close' = sClose . connection
+  liftIO
+    ( defaultPoolConfig open' close_ 20 connections
+        & newPool
+    )
+    Prelude.>>= f
+  where
+    open' = getConnection host port
+    close_ = close Prelude.. connection
 
 -- | Run action with a connection.
-runMonarchConn :: ( MonadBaseControl IO m
-                  , MonadIO m ) =>
-                  MonarchT m a -- ^ action
-               -> Connection -- ^ connection
-               -> m (Either Code a)
+runMonarchConn ::
+  ( MonadBaseControl Prelude.IO m,
+    MonadIO m
+  ) =>
+  -- | action
+  MonarchT m a ->
+  -- | connection
+  Connection ->
+  m (Prelude.Either Code a)
 runMonarchConn action conn = runMonarch conn action
 
 -- | Run action with a unused connection from the pool.
-runMonarchPool :: ( MonadBaseControl IO m
-                  , MonadIO m ) =>
-                  MonarchT m a -- ^ action
-               -> ConnectionPool -- ^ connection pool
-               -> m (Either Code a)
-runMonarchPool action pool =
-    withResource pool $ flip runMonarch action
+runMonarchPool ::
+  ( MonadBaseControl Prelude.IO m,
+    MonadIO m
+  ) =>
+  -- | action
+  MonarchT m a ->
+  -- | connection pool
+  ConnectionPool ->
+  m (Prelude.Either Code a)
+runMonarchPool action pool = mask $ \unmask -> do
+  (res, localPool) <- liftIO $ takeResource pool
+  r <- unmask (runMonarch res action) `onException` liftIO (destroyResource pool localPool res)
+  liftIO $ putResource localPool res
+  pure r
 
-throwError' :: Monad m =>
-             Code
-          -> SomeException
-          -> MonarchT m a
-throwError' = const . throwError
+throwError' ::
+  (Prelude.Monad m) =>
+  Code ->
+  SomeException ->
+  MonarchT m a
+throwError' = Prelude.const Prelude.. throwError
 
 -- | Send.
-sendLBS :: ( MonadBaseControl IO m
-           , MonadIO m ) =>
-           LBS.ByteString
-        -> MonarchT m ()
+sendLBS ::
+  ( MonadBaseControl Prelude.IO m,
+    MonadIO m
+  ) =>
+  LBS.ByteString ->
+  MonarchT m ()
 sendLBS lbs = do
-  conn <- connection <$> ask
+  conn <- asks connection
   liftIO (LBS.sendAll conn lbs) `catch` throwError' SendError
 
 -- | Receive.
-recvLBS :: ( MonadBaseControl IO m
-           , MonadIO m ) =>
-           Int64
-        -> MonarchT m LBS.ByteString
+recvLBS ::
+  ( MonadBaseControl Prelude.IO m,
+    MonadIO m
+  ) =>
+  Int64 ->
+  MonarchT m LBS.ByteString
 recvLBS n = do
-  conn <- connection <$> ask
+  conn <- asks connection
   lbs <- liftIO (LBS.recv conn n) `catch` throwError' ReceiveError
   if LBS.null lbs
     then throwError ReceiveError
-    else if n == LBS.length lbs
-           then return lbs
-           else LBS.append lbs <$> recvLBS (n - LBS.length lbs)
+    else
+      if n Prelude.== LBS.length lbs
+        then Prelude.return lbs
+        else LBS.append lbs Prelude.<$> recvLBS (n Prelude.- LBS.length lbs)
 
 -- | Make connection from host and port.
-getConnection :: HostName
-              -> Int
-              -> IO Connection
+getConnection ::
+  HostName ->
+  Prelude.Int ->
+  Prelude.IO Connection
 getConnection host port = do
-  let hints = defaultHints { addrFlags = [ AI_ADDRCONFIG ]
-                           , addrSocketType = Stream
-                           }
-  (addr:_) <- getAddrInfo (Just hints) (Just host) (Just $ show port)
+  let hints =
+        defaultHints
+          { addrFlags = [AI_ADDRCONFIG],
+            addrSocketType = Stream
+          }
+  (addr : _) <- getAddrInfo (Prelude.Just hints) (Prelude.Just host) (Prelude.Just Prelude.$ Prelude.show port)
   sock <- socket (addrFamily addr) (addrSocketType addr) (addrProtocol addr)
-  let failConnect = (\e -> sClose sock >> throwIO e) :: SomeException -> IO ()
+  let failConnect = (\e -> close sock Prelude.>> throwIO e) :: SomeException -> Prelude.IO ()
   connect sock (addrAddress addr) `catch` failConnect
-  return $ Connection sock
+  Prelude.return Prelude.$ Connection sock
 
 -- | Monad Monarch interfaces
-class Monad m => MonadMonarch m where
-
+class (Prelude.Monad m) => MonadMonarch m where
   -- | Store a record.
   --   If a record with the same key exists in the database,
   --   it is overwritten.
-  put :: BS.ByteString -- ^ key
-      -> BS.ByteString -- ^ value
-      -> m ()
+  put ::
+    -- | key
+    BS.ByteString ->
+    -- | value
+    BS.ByteString ->
+    m ()
 
   -- | Store records.
   --   If a record with the same key exists in the database,
   --   it is overwritten.
-  multiplePut :: [(BS.ByteString,BS.ByteString)] -- ^ key & value pairs
-              -> m ()
+  multiplePut ::
+    -- | key & value pairs
+    [(BS.ByteString, BS.ByteString)] ->
+    m ()
 
   -- | Store a new record.
   --   If a record with the same key exists in the database,
   --   this function has no effect.
-  putKeep :: BS.ByteString -- ^ key
-          -> BS.ByteString -- ^ value
-          -> m ()
+  putKeep ::
+    -- | key
+    BS.ByteString ->
+    -- | value
+    BS.ByteString ->
+    m ()
 
   -- | Concatenate a value at the end of the existing record.
   --   If there is no corresponding record, a new record is created.
-  putCat :: BS.ByteString -- ^ key
-         -> BS.ByteString -- ^ value
-         -> m ()
+  putCat ::
+    -- | key
+    BS.ByteString ->
+    -- | value
+    BS.ByteString ->
+    m ()
 
   -- | Concatenate a value at the end of the existing record and shift it to the left.
   --   If there is no corresponding record, a new record is created.
-  putShiftLeft :: BS.ByteString -- ^ key
-               -> BS.ByteString -- ^ value
-               -> Int  -- ^ width
-               -> m ()
+  putShiftLeft ::
+    -- | key
+    BS.ByteString ->
+    -- | value
+    BS.ByteString ->
+    -- | width
+    Prelude.Int ->
+    m ()
 
   -- | Store a record without response.
   --   If a record with the same key exists in the database, it is overwritten.
-  putNoResponse :: BS.ByteString -- ^ key
-                -> BS.ByteString -- ^ value
-                -> m ()
+  putNoResponse ::
+    -- | key
+    BS.ByteString ->
+    -- | value
+    BS.ByteString ->
+    m ()
 
   -- | Remove a record.
-  out :: BS.ByteString -- ^ key
-      -> m ()
+  out ::
+    -- | key
+    BS.ByteString ->
+    m ()
 
   -- | Remove records.
-  multipleOut :: [BS.ByteString] -- ^ keys
-              -> m ()
+  multipleOut ::
+    -- | keys
+    [BS.ByteString] ->
+    m ()
 
   -- | Retrieve a record.
-  get :: BS.ByteString -- ^ key
-      -> m (Maybe BS.ByteString)
+  get ::
+    -- | key
+    BS.ByteString ->
+    m (Prelude.Maybe BS.ByteString)
 
   -- | Retrieve records.
-  multipleGet :: [BS.ByteString] -- ^ keys
-              -> m [(BS.ByteString, BS.ByteString)]
+  multipleGet ::
+    -- | keys
+    [BS.ByteString] ->
+    m [(BS.ByteString, BS.ByteString)]
 
   -- | Get the size of the value of a record.
-  valueSize :: BS.ByteString -- ^ key
-            -> m (Maybe Int)
+  valueSize ::
+    -- | key
+    BS.ByteString ->
+    m (Prelude.Maybe Prelude.Int)
 
   -- | Initialize the iterator.
   iterInit :: m ()
 
   -- | Get the next key of the iterator.
   --   The iterator can be updated by multiple connections and then it is not assured that every record is traversed.
-  iterNext :: m (Maybe BS.ByteString)
+  iterNext :: m (Prelude.Maybe BS.ByteString)
 
   -- | Get forward matching keys.
-  forwardMatchingKeys :: BS.ByteString -- ^ key prefix
-                      -> Maybe Int -- ^ maximum number of keys to be fetched. 'Nothing' means unlimited.
-                      -> m [BS.ByteString]
+  forwardMatchingKeys ::
+    -- | key prefix
+    BS.ByteString ->
+    -- | maximum number of keys to be fetched. 'Prelude.Nothing' means unlimited.
+    Prelude.Maybe Prelude.Int ->
+    m [BS.ByteString]
 
   -- | Add an integer to a record.
   --   If the corresponding record exists, the value is treated as an integer and is added to.
   --   If no record corresponds, a new record of the additional value is stored.
-  addInt :: BS.ByteString -- ^ key
-         -> Int -- ^ value
-         -> m Int
+  addInt ::
+    -- | key
+    BS.ByteString ->
+    -- | value
+    Prelude.Int ->
+    m Prelude.Int
 
   -- | Add a real number to a record.
   --   If the corresponding record exists, the value is treated as a real number and is added to.
   --   If no record corresponds, a new record of the additional value is stored.
-  addDouble :: BS.ByteString -- ^ key
-            -> Double -- ^ value
-            -> m Double
+  addDouble ::
+    -- | key
+    BS.ByteString ->
+    -- | value
+    Prelude.Double ->
+    m Prelude.Double
 
   -- | Call a function of the script language extension.
-  ext :: BS.ByteString -- ^ function
-      -> [ExtOption] -- ^ option flags
-      -> BS.ByteString -- ^ key
-      -> BS.ByteString -- ^ value
-      -> m BS.ByteString
+  ext ::
+    -- | function
+    BS.ByteString ->
+    -- | option flags
+    [ExtOption] ->
+    -- | key
+    BS.ByteString ->
+    -- | value
+    BS.ByteString ->
+    m BS.ByteString
 
   -- | Synchronize updated contents with the file and the device.
   sync :: m ()
 
   -- | Optimize the storage.
-  optimize :: BS.ByteString -- ^ parameter
-           -> m ()
+  optimize ::
+    -- | parameter
+    BS.ByteString ->
+    m ()
 
   -- | Remove all records.
   vanish :: m ()
 
   -- | Copy the database file.
-  copy :: BS.ByteString -- ^ path
-       -> m ()
+  copy ::
+    -- | path
+    BS.ByteString ->
+    m ()
 
   -- | Restore the database file from the update log.
-  restore :: ( Integral a ) =>
-             BS.ByteString -- ^ path
-          -> a -- ^ beginning time stamp in microseconds
-          -> [RestoreOption] -- ^ option flags
-          -> m ()
+  restore ::
+    (Prelude.Integral a) =>
+    -- | path
+    BS.ByteString ->
+    -- | beginning time stamp in microseconds
+    a ->
+    -- | option flags
+    [RestoreOption] ->
+    m ()
 
   -- | Set the replication master.
-  setMaster :: ( Integral a ) =>
-               BS.ByteString -- ^ host
-            -> Int -- ^ port
-            -> a -- ^ beginning time stamp in microseconds
-            -> [RestoreOption] -- ^ option flags
-            -> m ()
+  setMaster ::
+    (Prelude.Integral a) =>
+    -- | host
+    BS.ByteString ->
+    -- | port
+    Prelude.Int ->
+    -- | beginning time stamp in microseconds
+    a ->
+    -- | option flags
+    [RestoreOption] ->
+    m ()
 
   -- | Get the number of records.
   recordNum :: m Int64
@@ -325,7 +447,11 @@ class Monad m => MonadMonarch m where
   status :: m BS.ByteString
 
   -- | Call a versatile function for miscellaneous operations.
-  misc :: BS.ByteString -- ^ function name
-       -> [MiscOption] -- ^ option flags
-       -> [BS.ByteString] -- ^ arguments
-       -> m [BS.ByteString]
+  misc ::
+    -- | function name
+    BS.ByteString ->
+    -- | option flags
+    [MiscOption] ->
+    -- | arguments
+    [BS.ByteString] ->
+    m [BS.ByteString]
