@@ -17,7 +17,6 @@ module Database.Monarch.Mock.Action () where
 import Control.Concurrent.STM.TVar
 import Control.Monad.Reader
 import Control.Monad.STM (atomically)
-import Control.Monad.Trans.Control
 import qualified Data.ByteString as BS
 import Data.Map ((!))
 import qualified Data.Map as M
@@ -43,7 +42,7 @@ getDB key db =
       TTString value -> return value
       _ -> error "get"
 
-instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MockT m) where
+instance (MonadIO m) => MonadMonarch (MockT m) where
   put key value = do
     tdb <- ask
     liftIO $ atomically $ modifyTVar tdb $ putDBS key value

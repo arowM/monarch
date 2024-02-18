@@ -16,8 +16,6 @@
 module Database.Monarch.Action () where
 
 import Control.Monad
-import Control.Monad.Except
-import Control.Monad.Trans.Control
 import qualified Data.Binary as B
 import Data.Binary.Put (putByteString, putWord32be)
 import Data.ByteString.Char8 ()
@@ -25,8 +23,10 @@ import Data.Int
 import Data.Maybe
 import Database.Monarch.Types
 import Database.Monarch.Utils
+import UnliftIO (MonadUnliftIO)
+import UnliftIO.Exception (throwIO)
 
-instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
+instance (MonadUnliftIO m) => MonadMonarch (MonarchT m) where
   put key value = communicate request response
     where
       request = do
@@ -34,7 +34,7 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         mapM_ (putWord32be . lengthBS32) [key, value]
         mapM_ putByteString [key, value]
       response Success = return ()
-      response code = throwError code
+      response code = throwIO code
 
   multiplePut [] = return ()
   multiplePut kvs = void $ misc "putlist" [] (kvs >>= \(k, v) -> [k, v])
@@ -47,7 +47,7 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         mapM_ putByteString [key, value]
       response Success = return ()
       response InvalidOperation = return ()
-      response code = throwError code
+      response code = throwIO code
 
   putCat key value = communicate request response
     where
@@ -56,7 +56,7 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         mapM_ (putWord32be . lengthBS32) [key, value]
         mapM_ putByteString [key, value]
       response Success = return ()
-      response code = throwError code
+      response code = throwIO code
 
   putShiftLeft key value width = communicate request response
     where
@@ -66,7 +66,7 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         putWord32be $ fromIntegral width
         mapM_ putByteString [key, value]
       response Success = return ()
-      response code = throwError code
+      response code = throwIO code
 
   putNoResponse key value = yieldRequest request
     where
@@ -83,7 +83,7 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         putByteString key
       response Success = return ()
       response InvalidOperation = return ()
-      response code = throwError code
+      response code = throwIO code
 
   multipleOut [] = return ()
   multipleOut keys = void $ misc "outlist" [] keys
@@ -96,7 +96,7 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         putByteString key
       response Success = Just <$> parseBS
       response InvalidOperation = return Nothing
-      response code = throwError code
+      response code = throwIO code
 
   multipleGet keys = communicate request response
     where
@@ -112,7 +112,7 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
       response Success = do
         siz <- fromIntegral <$> parseWord32
         replicateM siz parseKeyValue
-      response code = throwError code
+      response code = throwIO code
 
   valueSize key = communicate request response
     where
@@ -122,20 +122,20 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         putByteString key
       response Success = Just . fromIntegral <$> parseWord32
       response InvalidOperation = return Nothing
-      response code = throwError code
+      response code = throwIO code
 
   iterInit = communicate request response
     where
       request = putMagic 0x50
       response Success = return ()
-      response code = throwError code
+      response code = throwIO code
 
   iterNext = communicate request response
     where
       request = putMagic 0x51
       response Success = Just <$> parseBS
       response InvalidOperation = return Nothing
-      response code = throwError code
+      response code = throwIO code
 
   forwardMatchingKeys prefix n = communicate request response
     where
@@ -147,7 +147,7 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
       response Success = do
         siz <- fromIntegral <$> parseWord32
         replicateM siz parseBS
-      response code = throwError code
+      response code = throwIO code
 
   addInt key n = communicate request response
     where
@@ -157,7 +157,7 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         putWord32be $ fromIntegral n
         putByteString key
       response Success = fromIntegral <$> parseWord32
-      response code = throwError code
+      response code = throwIO code
 
   addDouble key n = communicate request response
     where
@@ -168,7 +168,7 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         B.put (truncate (snd (properFraction n :: (Int, Double)) * 1e12) :: Int64)
         putByteString key
       response Success = parseDouble
-      response code = throwError code
+      response code = throwIO code
 
   ext func opts key value = communicate request response
     where
@@ -182,13 +182,13 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         putByteString key
         putByteString value
       response Success = parseBS
-      response code = throwError code
+      response code = throwIO code
 
   sync = communicate request response
     where
       request = putMagic 0x70
       response Success = return ()
-      response code = throwError code
+      response code = throwIO code
 
   optimize param = communicate request response
     where
@@ -197,13 +197,13 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         putWord32be $ lengthBS32 param
         putByteString param
       response Success = return ()
-      response code = throwError code
+      response code = throwIO code
 
   vanish = communicate request response
     where
       request = putMagic 0x72
       response Success = return ()
-      response code = throwError code
+      response code = throwIO code
 
   copy path = communicate request response
     where
@@ -212,7 +212,7 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         putWord32be $ lengthBS32 path
         putByteString path
       response Success = return ()
-      response code = throwError code
+      response code = throwIO code
 
   restore path usec opts = communicate request response
     where
@@ -223,7 +223,7 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         putOptions opts
         putByteString path
       response Success = return ()
-      response code = throwError code
+      response code = throwIO code
 
   setMaster host port usec opts = communicate request response
     where
@@ -235,25 +235,25 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
         putOptions opts
         putByteString host
       response Success = return ()
-      response code = throwError code
+      response code = throwIO code
 
   recordNum = communicate request response
     where
       request = putMagic 0x80
       response Success = parseInt64
-      response code = throwError code
+      response code = throwIO code
 
   size = communicate request response
     where
       request = putMagic 0x81
       response Success = parseInt64
-      response code = throwError code
+      response code = throwIO code
 
   status = communicate request response
     where
       request = putMagic 0x88
       response Success = parseBS
-      response code = throwError code
+      response code = throwIO code
 
   misc func opts args = communicate request response
     where
@@ -272,4 +272,4 @@ instance (MonadBaseControl IO m, MonadIO m) => MonadMonarch (MonarchT m) where
       response Success = do
         siz <- fromIntegral <$> parseWord32
         replicateM siz parseBS
-      response code = throwError code
+      response code = throwIO code

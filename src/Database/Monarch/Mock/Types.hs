@@ -26,14 +26,12 @@ module Database.Monarch.Mock.Types
 where
 
 import Control.Concurrent.STM.TVar
-import Control.Monad.Base
 import Control.Monad.Except
   ( ExceptT (..),
     MonadError,
     runExceptT,
   )
 import Control.Monad.Reader
-import Control.Monad.Trans.Control
 import qualified Data.ByteString as BS
 import qualified Data.Map as M
 import Database.Monarch.Types (Code)
@@ -58,22 +56,8 @@ newtype MockT m a = MockT {unMockT :: ExceptT Code (ReaderT (TVar MockDB) m) a}
       Monad,
       MonadIO,
       MonadReader (TVar MockDB),
-      MonadError Code,
-      MonadBase base
+      MonadError Code
     )
-
-instance MonadTrans MockT where
-  lift = MockT . lift . lift
-
-instance MonadTransControl MockT where
-  type StT MockT a = Either Code a
-  liftWith f = MockT . ExceptT . ReaderT $ (\r -> fmap Right (f $ \t -> runReaderT (runExceptT (unMockT t)) r))
-  restoreT = MockT . ExceptT . ReaderT . const
-
-instance (MonadBaseControl base m) => MonadBaseControl base (MockT m) where
-  type StM (MockT m) a = ComposeSt MockT m a
-  liftBaseWith = defaultLiftBaseWith
-  restoreM = defaultRestoreM
 
 -- | Empty mock DB
 emptyMockDB :: MockDB

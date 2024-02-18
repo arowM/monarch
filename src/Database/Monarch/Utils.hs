@@ -29,8 +29,6 @@ module Database.Monarch.Utils
   )
 where
 
-import Control.Monad.IO.Class
-import Control.Monad.Trans.Control
 import qualified Data.Binary as B
 import Data.Binary.Get (getWord32be, runGet)
 import Data.Binary.Put (putWord32be, runPut)
@@ -39,6 +37,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Int
 import Database.Monarch.Types
+import UnliftIO (MonadUnliftIO)
 
 class BitFlag32 a where
   fromOption :: a -> Int32
@@ -138,8 +137,7 @@ fromLBS = BS.pack . LBS.unpack
 
 -- | Send request.
 yieldRequest ::
-  ( MonadBaseControl IO m,
-    MonadIO m
+  ( MonadUnliftIO m
   ) =>
   B.Put ->
   MonarchT m ()
@@ -147,16 +145,14 @@ yieldRequest = sendLBS . runPut
 
 -- | Receive response code.
 responseCode ::
-  ( MonadBaseControl IO m,
-    MonadIO m
+  ( MonadUnliftIO m
   ) =>
   MonarchT m Code
 responseCode = toCode . fromIntegral . runGet B.getWord8 <$> recvLBS 1
 
 -- | Parse byte string (lazy) value.
 parseLBS ::
-  ( MonadBaseControl IO m,
-    MonadIO m
+  ( MonadUnliftIO m
   ) =>
   MonarchT m LBS.ByteString
 parseLBS =
@@ -165,32 +161,28 @@ parseLBS =
 
 -- | Parse byte string (strict) value.
 parseBS ::
-  ( MonadBaseControl IO m,
-    MonadIO m
+  ( MonadUnliftIO m
   ) =>
   MonarchT m BS.ByteString
 parseBS = fromLBS <$> parseLBS
 
 -- | Parse Word32 value.
 parseWord32 ::
-  ( MonadBaseControl IO m,
-    MonadIO m
+  ( MonadUnliftIO m
   ) =>
   MonarchT m B.Word32
 parseWord32 = runGet getWord32be <$> recvLBS 4
 
 -- | Parse Int64 value.
 parseInt64 ::
-  ( MonadBaseControl IO m,
-    MonadIO m
+  ( MonadUnliftIO m
   ) =>
   MonarchT m Int64
 parseInt64 = runGet (B.get :: B.Get Int64) <$> recvLBS 8
 
 -- | Parse Double value.
 parseDouble ::
-  ( MonadBaseControl IO m,
-    MonadIO m
+  ( MonadUnliftIO m
   ) =>
   MonarchT m Double
 parseDouble = do
@@ -200,8 +192,7 @@ parseDouble = do
 
 -- | Parse key value pair.
 parseKeyValue ::
-  ( MonadBaseControl IO m,
-    MonadIO m
+  ( MonadUnliftIO m
   ) =>
   MonarchT m (BS.ByteString, BS.ByteString)
 parseKeyValue = do
@@ -217,8 +208,7 @@ parseKeyValue = do
 
 -- | Make a query.
 communicate ::
-  ( MonadBaseControl IO m,
-    MonadIO m
+  ( MonadUnliftIO m
   ) =>
   B.Put ->
   (Code -> MonarchT m a) ->
