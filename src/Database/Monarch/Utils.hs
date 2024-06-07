@@ -66,8 +66,7 @@ toCode 2 = HostNotFound
 toCode 3 = ConnectionRefused
 toCode 4 =
     SendError
-        { request = []
-        , message = ""
+        { message = ""
         }
 toCode 5 = ReceiveError
 toCode 6 = ExistingRecord
