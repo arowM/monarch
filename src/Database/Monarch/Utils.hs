@@ -66,7 +66,7 @@ toCode 2 = HostNotFound
 toCode 3 = ConnectionRefused
 toCode 4 =
     SendError
-        { request = LBS.empty
+        { request = []
         , message = ""
         }
 toCode 5 = ReceiveError

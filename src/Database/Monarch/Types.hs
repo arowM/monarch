@@ -49,6 +49,7 @@ import Data.Pool
     , putResource
     , takeResource
     )
+import GHC.Word (Word8)
 import Network.Socket
     ( AddrInfo (..)
     , AddrInfoFlag (..)
@@ -90,7 +91,7 @@ data Code
     | HostNotFound
     | ConnectionRefused
     | SendError
-        { request :: LBS.ByteString
+        { request :: [Word8]
         , message :: String
         }
     | ReceiveError
@@ -246,7 +247,7 @@ sendLBS lbs = do
     liftIO (LBS.sendAll conn lbs) `catchAny` \e -> do
         throwIO $
             SendError
-                { request = lbs
+                { request = LBS.unpack lbs
                 , message = show e
                 }
 
