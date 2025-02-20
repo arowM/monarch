@@ -36,6 +36,7 @@ module Database.Monarch.Types (
 )
 where
 
+import Control.Concurrent (getNumCapabilities)
 import Control.Monad.Reader (MonadReader, ReaderT (..), asks)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
@@ -157,8 +158,10 @@ withMonarchPool ::
     m a
 withMonarchPool host port connections f =
     liftIO
-        ( defaultPoolConfig open' close_ 20 connections
-            & newPool
+        ( do
+            caps <- getNumCapabilities
+            defaultPoolConfig open' close_ 20 (connections * caps)
+                & newPool
         )
         Prelude.>>= f
   where
